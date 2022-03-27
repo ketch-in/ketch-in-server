@@ -1,0 +1,37 @@
+{
+  "name": "ketch-in-server",
+  "version": "0.2.0-beta.1",
+  "description": "Intermediary role between host and client.",
+  "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ketch-in/ketch-in-server"
+  },
+  "keywords": [
+    "Server"
+  ],
+  "author": "Sotaneum",
+  "license": "MIT",
+  "scripts": {
+    "start": "npm run build && node ./dist",
+    "build": "tsc --project ./tsconfig.json",
+    "postbuild": "cp ./public/index.html ./dist/index.html",
+    "docker:build": "docker build -t ketch-in-server .",
+    "docker:stop": "docker stop ketch-in-server || true && docker rm ketch-in-server || true",
+    "docker:start": "npm run docker:build && docker run --name=ketch-in-server -p 80:8000 ketch-in-server:latest",
+    "predocker:start": "npm run docker:stop"
+  },
+  "dependencies": {
+    "express": "^4.17.1",
+    "socket.io": "^4.3.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.13",
+    "@typescript-eslint/eslint-plugin": "^4.17.0",
+    "@typescript-eslint/parser": "^4.17.0",
+    "electron": "15.3.1",
+    "eslint": "^7.6.0",
+    "eslint-plugin-import": "^2.20.0",
+    "typescript": "^4.4.4"
+  }
+}
