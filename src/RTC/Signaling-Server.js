@@ -87,25 +87,6 @@ export default function (socket, config) {
     var sessionid = params.sessionid;
     var maxParticipantsAllowed =
       parseInt(params.maxParticipantsAllowed || 1000) || 1000;
-    var enableScalableBroadcast =
-      params.enableScalableBroadcast === true ||
-      params.enableScalableBroadcast === "true";
-
-    if (enableScalableBroadcast === true) {
-      try {
-        if (!ScalableBroadcast) {
-          // path to scalable broadcast script must be accurate
-          ScalableBroadcast = require("./Scalable-Broadcast.js");
-        }
-        ScalableBroadcast._ = ScalableBroadcast(
-          config,
-          socket,
-          params.maxRelayLimitPerUser
-        );
-      } catch (e) {
-        pushLogs(config, "ScalableBroadcast", e);
-      }
-    }
 
     // do not allow to override userid
     if (!!listOfUsers[params.userid]) {
@@ -418,11 +399,6 @@ export default function (socket, config) {
           var owner = listOfRooms[roomid].owner;
           if (listOfUsers[owner]) {
             message.remoteUserId = owner;
-
-            if (enableScalableBroadcast === false) {
-              // only send to owner i.e. only connect with room owner
-              listOfUsers[owner].socket.emit(socketMessageEvent, message);
-            }
           }
           return;
         }
@@ -430,16 +406,14 @@ export default function (socket, config) {
         // redundant?
         // appendToRoom(roomid, socket.userid);
 
-        if (enableScalableBroadcast === false) {
-          // connect with all participants
-          listOfRooms[roomid].participants.forEach(function (pid) {
-            if (pid === socket.userid || !listOfUsers[pid]) return;
+        // connect with all participants
+        listOfRooms[roomid].participants.forEach(function (pid) {
+          if (pid === socket.userid || !listOfUsers[pid]) return;
 
-            var user = listOfUsers[pid];
-            message.remoteUserId = pid;
-            user.socket.emit(socketMessageEvent, message);
-          });
-        }
+          var user = listOfUsers[pid];
+          message.remoteUserId = pid;
+          user.socket.emit(socketMessageEvent, message);
+        });
       } catch (e) {
         pushLogs(config, "joinARoom", e);
       }
@@ -540,26 +514,8 @@ export default function (socket, config) {
           message.remoteUserId != "system" &&
           message.message.newParticipationRequest
         ) {
-          if (enableScalableBroadcast === true) {
-            var user = listOfUsers[message.remoteUserId];
-            if (user) {
-              user.socket.emit(socketMessageEvent, message);
-            }
-
-            if (
-              listOfUsers[socket.userid] &&
-              listOfUsers[socket.userid].extra.broadcastId
-            ) {
-              // for /admin/ page
-              appendToRoom(
-                listOfUsers[socket.userid].extra.broadcastId,
-                socket.userid
-              );
-            }
-          } else if (listOfRooms[message.remoteUserId]) {
-            joinARoom(message);
-            return;
-          }
+          joinARoom(message);
+          return;
         }
 
         // for v3 backward compatibility; >v3.3.3 no more uses below block
@@ -713,11 +669,6 @@ export default function (socket, config) {
           return;
         }
 
-        if (enableScalableBroadcast === true) {
-          arg.session.scalable = true;
-          arg.sessionid = arg.extra.broadcastId;
-        }
-
         // maybe redundant?
         if (!listOfUsers[socket.userid]) {
           listOfUsers[socket.userid] = {
@@ -746,38 +697,32 @@ export default function (socket, config) {
 
       try {
         // override owner & session
-        if (enableScalableBroadcast === true) {
-          if (Object.keys(listOfRooms[arg.sessionid]).length == 1) {
-            listOfRooms[arg.sessionid].owner = socket.userid;
-            listOfRooms[arg.sessionid].session = arg.session;
-          }
-        } else {
-          // for non-scalable-broadcast demos
-          listOfRooms[arg.sessionid].owner = socket.userid;
-          listOfRooms[arg.sessionid].session = arg.session;
-          listOfRooms[arg.sessionid].extra = arg.extra || {};
-          listOfRooms[arg.sessionid].socketMessageEvent =
-            listOfUsers[socket.userid].socketMessageEvent;
-          listOfRooms[arg.sessionid].socketCustomEvent =
-            listOfUsers[socket.userid].socketCustomEvent;
-          listOfRooms[arg.sessionid].maxParticipantsAllowed =
-            parseInt(params.maxParticipantsAllowed || 1000) || 1000;
 
-          if (arg.identifier && arg.identifier.toString().length) {
-            listOfRooms[arg.sessionid].identifier = arg.identifier;
-          }
+        // for non-scalable-broadcast demos
+        listOfRooms[arg.sessionid].owner = socket.userid;
+        listOfRooms[arg.sessionid].session = arg.session;
+        listOfRooms[arg.sessionid].extra = arg.extra || {};
+        listOfRooms[arg.sessionid].socketMessageEvent =
+          listOfUsers[socket.userid].socketMessageEvent;
+        listOfRooms[arg.sessionid].socketCustomEvent =
+          listOfUsers[socket.userid].socketCustomEvent;
+        listOfRooms[arg.sessionid].maxParticipantsAllowed =
+          parseInt(params.maxParticipantsAllowed || 1000) || 1000;
 
-          try {
-            if (
-              typeof arg.password !== "undefined" &&
-              arg.password.toString().length
-            ) {
-              // password protected room?
-              listOfRooms[arg.sessionid].password = arg.password;
-            }
-          } catch (e) {
-            pushLogs(config, "open-room.password", e);
+        if (arg.identifier && arg.identifier.toString().length) {
+          listOfRooms[arg.sessionid].identifier = arg.identifier;
+        }
+
+        try {
+          if (
+            typeof arg.password !== "undefined" &&
+            arg.password.toString().length
+          ) {
+            // password protected room?
+            listOfRooms[arg.sessionid].password = arg.password;
           }
+        } catch (e) {
+          pushLogs(config, "open-room.password", e);
         }
 
         // admin info are shared only with /admin/
@@ -806,11 +751,6 @@ export default function (socket, config) {
       try {
         // if already joined a room, either leave or close it
         closeOrShiftRoom();
-
-        if (enableScalableBroadcast === true) {
-          arg.session.scalable = true;
-          arg.sessionid = arg.extra.broadcastId;
-        }
 
         // maybe redundant?
         if (!listOfUsers[socket.userid]) {
