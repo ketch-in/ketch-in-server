@@ -51,6 +51,10 @@ const io = new Server(server, { cors: { origin: "*" } });
 io.on("connection", (socket) => {
   addSocket(socket, {});
 
+  socket.onAny((title, ...args) => {
+    console.log(">>>>> ", title);
+  });
+
   // const params = socket.handshake.query;
 
   // if (!toString(params.socketCustomEvent)) {

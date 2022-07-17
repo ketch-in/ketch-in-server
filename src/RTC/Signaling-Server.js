@@ -53,196 +53,6 @@ export default function (socket, config) {
     } catch (e) {
       pushLogs(config, "appendUser", e);
     }
-
-    sendToAdmin();
-  }
-
-  function sendToAdmin(all) {
-    if (config.enableAdmin !== true) {
-      return;
-    }
-
-    try {
-      if (adminSocket) {
-        var users = [];
-        // temporarily disabled
-        config.enableAdmin === true &&
-          Object.keys(listOfUsers).forEach(function (userid) {
-            try {
-              var item = listOfUsers[userid];
-              if (!item) return; // maybe user just left?
-
-              if (!item.connectedWith) {
-                item.connectedWith = {};
-              }
-
-              if (!item.socket) {
-                item.socket = {};
-              }
-
-              users.push({
-                userid: userid,
-                admininfo: item.socket.admininfo || "",
-                connectedWith: Object.keys(item.connectedWith),
-              });
-            } catch (e) {
-              pushLogs(config, "admin.user-looper", e);
-            }
-          });
-
-        var scalableBroadcastUsers = 0;
-        if (ScalableBroadcast && ScalableBroadcast._) {
-          scalableBroadcastUsers = ScalableBroadcast._.getUsers();
-        }
-
-        adminSocket.emit("admin", {
-          newUpdates: !all,
-          listOfRooms: !!all ? listOfRooms : [],
-          listOfUsers: Object.keys(listOfUsers).length, // users
-          scalableBroadcastUsers: scalableBroadcastUsers.length,
-        });
-      }
-    } catch (e) {
-      pushLogs(config, "admin", e);
-    }
-  }
-
-  function handleAdminSocket(socket, params) {
-    if (
-      config.enableAdmin !== true ||
-      !params.adminUserName ||
-      !params.adminPassword
-    ) {
-      socket.emit("admin", {
-        error:
-          'Please pass "adminUserName" and "adminPassword" via socket.io parameters.',
-      });
-
-      pushLogs(config, "invalid-admin", {
-        message: CONST_STRINGS.INVALID_ADMIN_CREDENTIAL,
-        stack:
-          "name: " +
-          params.adminUserName +
-          "\n" +
-          "password: " +
-          params.adminPassword,
-      });
-
-      socket.disconnect(); //disabled admin
-      return;
-    }
-
-    if (!isAdminAuthorized(params, config)) {
-      socket.emit("admin", {
-        error: "Invalid admin username or password.",
-      });
-
-      pushLogs(config, "invalid-admin", {
-        message: CONST_STRINGS.INVALID_ADMIN_CREDENTIAL,
-        stack:
-          "name: " +
-          params.adminUserName +
-          "\n" +
-          "password: " +
-          params.adminPassword,
-      });
-
-      socket.disconnect();
-      return;
-    }
-
-    socket.emit("admin", {
-      connected: true,
-    });
-
-    adminSocket = socket;
-    socket.on("admin", function (message, callback) {
-      if (!isAdminAuthorized(params, config)) {
-        socket.emit("admin", {
-          error: "Invalid admin username or password.",
-        });
-
-        pushLogs(config, "invalid-admin", {
-          message: CONST_STRINGS.INVALID_ADMIN_CREDENTIAL,
-          stack:
-            "name: " +
-            params.adminUserName +
-            "\n" +
-            "password: " +
-            params.adminPassword,
-        });
-
-        socket.disconnect();
-        return;
-      }
-
-      callback = callback || function () {};
-
-      if (message.all === true) {
-        sendToAdmin(true);
-      }
-
-      if (message.userinfo === true && message.userid) {
-        try {
-          var user = listOfUsers[message.userid];
-          if (user) {
-            callback(user.socket.admininfo || {});
-          } else {
-            callback({
-              error: CONST_STRINGS.USERID_NOT_AVAILABLE,
-            });
-          }
-        } catch (e) {
-          pushLogs(config, "userinfo", e);
-        }
-      }
-
-      if (message.clearLogs === true) {
-        // last callback parameter will force to clear logs
-        pushLogs(config, "", "", callback);
-      }
-
-      if (message.deleteUser === true) {
-        try {
-          var user = listOfUsers[message.userid];
-
-          if (user) {
-            if (user.socket.owner) {
-              // delete listOfRooms[user.socket.owner];
-            }
-
-            user.socket.disconnect();
-          }
-
-          // delete listOfUsers[message.userid];
-          callback(true);
-        } catch (e) {
-          pushLogs(config, "deleteUser", e);
-          callback(false);
-        }
-      }
-
-      if (message.deleteRoom === true) {
-        try {
-          var room = listOfRooms[message.roomid];
-
-          if (room) {
-            var participants = room.participants;
-            delete listOfRooms[message.roomid];
-            participants.forEach(function (userid) {
-              var user = listOfUsers[userid];
-              if (user) {
-                user.socket.disconnect();
-              }
-            });
-          }
-          callback(true);
-        } catch (e) {
-          pushLogs(config, "deleteRoom", e);
-          callback(false);
-        }
-      }
-    });
   }
 
   function onConnection(socket) {
@@ -280,11 +90,6 @@ export default function (socket, config) {
     var enableScalableBroadcast =
       params.enableScalableBroadcast === true ||
       params.enableScalableBroadcast === "true";
-
-    if (params.userid === "admin") {
-      handleAdminSocket(socket, params);
-      return;
-    }
 
     if (enableScalableBroadcast === true) {
       try {
@@ -342,7 +147,6 @@ export default function (socket, config) {
 
         // sent alert to all room participants
         if (!socket.admininfo) {
-          sendToAdmin();
           return;
         }
 
@@ -366,8 +170,6 @@ export default function (socket, config) {
             }
           });
         }
-
-        sendToAdmin();
       } catch (e) {
         pushLogs(config, "extra-data-updated", e);
       }
@@ -452,7 +254,6 @@ export default function (socket, config) {
         ) {
           delete listOfUsers[socket.userid].connectedWith[remoteUserId];
           socket.emit("user-disconnected", remoteUserId);
-          sendToAdmin();
         }
 
         if (!listOfUsers[remoteUserId]) return callback();
@@ -463,7 +264,6 @@ export default function (socket, config) {
             "user-disconnected",
             socket.userid
           );
-          sendToAdmin();
         }
         callback();
       } catch (e) {
@@ -571,8 +371,6 @@ export default function (socket, config) {
               message.sender
             );
           }
-
-          sendToAdmin();
         }
 
         if (
@@ -585,8 +383,6 @@ export default function (socket, config) {
             socketMessageEvent,
             message
           );
-
-          sendToAdmin();
         }
       } catch (e) {
         pushLogs(config, "onMessageCallback", e);
@@ -647,8 +443,6 @@ export default function (socket, config) {
       } catch (e) {
         pushLogs(config, "joinARoom", e);
       }
-
-      sendToAdmin();
     }
 
     function appendToRoom(roomid, userid) {
@@ -999,8 +793,6 @@ export default function (socket, config) {
         pushLogs(config, "open-room", e);
       }
 
-      sendToAdmin();
-
       try {
         callback(true);
       } catch (e) {
@@ -1086,8 +878,6 @@ export default function (socket, config) {
         pushLogs(config, "join-room", e);
       }
 
-      sendToAdmin();
-
       try {
         callback(true);
       } catch (e) {
@@ -1136,8 +926,6 @@ export default function (socket, config) {
           pushLogs("socket.ondisconnect", e);
         }
       }
-
-      sendToAdmin();
     });
   }
 }
