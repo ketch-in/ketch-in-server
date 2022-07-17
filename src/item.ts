@@ -13,9 +13,11 @@ export default class Item {
   }
 
   static removeById(id: string): void {
-    if (!this.items[id]) {
+    const item = this.get(id);
+    if (!item) {
       return;
     }
+    item.destroy();
     delete this.items[id];
   }
 
@@ -38,5 +40,9 @@ export default class Item {
   constructor(id: string) {
     this.id = Item.createId(id);
     Item.add(this);
+  }
+
+  destroy(): void {
+    return;
   }
 }
