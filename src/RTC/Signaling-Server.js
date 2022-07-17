@@ -294,10 +294,13 @@ export default function (socket) {
 
   function onMessageCallback(message) {
     try {
-      if (!User.get(message.sender)) {
-        currentUser.socket.emit("user-not-found", message.sender);
+      const sender = User.get(message.sender);
+      if (!sender) {
+        currentUser.emit("user-not-found", message.sender);
         return;
       }
+
+      const remoteUser = User.get(message.remoteUserId);
 
       // we don't need "connectedWith" anymore
       // todo: remove all these redundant codes
@@ -305,38 +308,19 @@ export default function (socket) {
       // rename "user-connected" to "user-status-changed"
       if (
         !message.message.userLeft &&
-        !User.get(message.sender).connectedWith[message.remoteUserId] &&
-        !!User.get(message.remoteUserId)
+        !sender.connectedWith[message.remoteUserId] &&
+        remoteUser
       ) {
-        User.get(message.sender).connectedWith[message.remoteUserId] = User.get(
-          message.remoteUserId
-        ).socket;
-        User.get(message.sender).socket.emit(
-          "user-connected",
-          message.remoteUserId
-        );
+        sender.connectedWith[message.remoteUserId] = remoteUser.socket;
+        sender.emit("user-connected", message.remoteUserId);
 
-        if (!User.get(message.remoteUserId)) {
-          console.log("oh!");
-        }
-
-        User.get(message.remoteUserId).connectedWith[message.sender] = socket;
-
-        if (User.get(message.remoteUserId).socket) {
-          User.get(message.remoteUserId).socket.emit(
-            "user-connected",
-            message.sender
-          );
-        }
+        remoteUser.connectedWith[message.sender] = socket;
+        remoteUser.emit("user-connected", message.sender);
       }
 
-      if (
-        User.get(message.sender) &&
-        User.get(message.sender).connectedWith[message.remoteUserId] &&
-        currentUser
-      ) {
+      if (sender && sender.connectedWith[message.remoteUserId] && currentUser) {
         message.extra = currentUser.extra;
-        User.get(message.sender).connectedWith[message.remoteUserId].emit(
+        sender.connectedWith[message.remoteUserId].emit(
           "file-sharing-demo",
           message
         );
