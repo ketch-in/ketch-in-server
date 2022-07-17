@@ -100,48 +100,30 @@ export default function (socket) {
     try {
       if (!currentUser) return;
 
-      if (currentUser.admininfo) {
-        currentUser.admininfo.extra = extra;
-      }
-
-      // todo: use "admininfo.extra" instead of below one
       currentUser.extra = extra;
+      currentUser.admininfo.extra = extra;
 
-      try {
-        for (var user in currentUser.connectedWith) {
-          try {
-            User.get(user).socket.emit(
-              "extra-data-updated",
-              currentUser.userId,
-              extra
-            );
-          } catch (e) {
-            console.log("extra-data-updated.connectedWith", e);
-          }
+      Object.values(currentUser.connectedWith).forEach((connectedSocket) => {
+        try {
+          connectedSocket.emit("extra-data-updated", currentUser.userId, extra);
+        } catch (e) {
+          console.log("extra-data-updated.connectedWith", e);
         }
-      } catch (e) {
-        console.log("extra-data-updated.connectedWith", e);
-      }
+      });
 
-      // sent alert to all room participants
-      if (!currentUser.admininfo) {
-        return;
-      }
-
-      var roomid = currentUser.admininfo.sessionid;
-      if (roomid && listOfRooms[roomid]) {
-        if (currentUser.userId == listOfRooms[roomid].owner) {
+      const roomId = currentUser.admininfo.sessionid;
+      if (roomId && listOfRooms[roomId]) {
+        if (currentUser.userId == listOfRooms[roomId].owner) {
           // room's extra must match owner's extra
-          listOfRooms[roomid].extra = extra;
+          listOfRooms[roomId].extra = extra;
         }
-        listOfRooms[roomid].participants.forEach(function (pid) {
+        listOfRooms[roomId].participants.forEach((pid) => {
           try {
-            var user = User.get(pid);
+            const user = User.get(pid);
             if (!user) {
               // todo: remove this user from participants list
               return;
             }
-
             user.socket.emit("extra-data-updated", currentUser.userId, extra);
           } catch (e) {
             console.log("extra-data-updated.participants", e);
@@ -208,14 +190,9 @@ export default function (socket) {
           message.remoteUserId
         );
 
-        // if (!User.get(message.remoteUserId)) {
-        //   User.get(message.remoteUserId) = {
-        //     socket: null,
-        //     connectedWith: {},
-        //     extra: {},
-        //     admininfo: {},
-        //   };
-        // }
+        if (!User.get(message.remoteUserId)) {
+          console.log("oh!");
+        }
 
         User.get(message.remoteUserId).connectedWith[message.sender] = socket;
 
@@ -245,7 +222,7 @@ export default function (socket) {
 
   function joinARoom(message) {
     try {
-      if (!currentUser.admininfo || !currentUser.admininfo.sessionid) return;
+      if (!currentUser.admininfo.sessionid) return;
 
       // var roomid = message.remoteUserId;
       var roomid = currentUser.admininfo.sessionid;
@@ -319,10 +296,6 @@ export default function (socket) {
 
   function closeOrShiftRoom() {
     try {
-      if (!currentUser.admininfo) {
-        return;
-      }
-
       var roomid = currentUser.admininfo.sessionid;
 
       if (!roomid || !listOfRooms[roomid]) {
