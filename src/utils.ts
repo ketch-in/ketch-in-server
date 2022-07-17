@@ -20,7 +20,7 @@ export function parseExtra(extra: unknown): Dictionary {
 }
 
 export function wrapperCallback(title: string, callback = console.log) {
-  return (...args: unknown[]) => {
+  return (...args: unknown[]): void => {
     try {
       callback(...args);
     } catch (e) {
