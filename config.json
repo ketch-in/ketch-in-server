@@ -11,7 +11,7 @@
   "sslKey": "./fake-keys/privatekey.pem",
   "sslCert": "./fake-keys/certificate.pem",
   "sslCabundle": "",
-  "enableAdmin": "true",
+  "enableAdmin": "false",
   "adminUserName": "username",
   "adminPassword": "password"
 }
