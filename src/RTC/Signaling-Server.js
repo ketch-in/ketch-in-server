@@ -135,32 +135,32 @@ export default function (socket) {
     }
   });
 
-  socket.on("check-presence", function (roomid, callback) {
+  socket.on("check-presence", function (roomId, callback) {
     try {
-      if (!listOfRooms[roomid] || !listOfRooms[roomid].participants.length) {
-        callback(false, roomid, {
+      if (!listOfRooms[roomId] || !listOfRooms[roomId].participants.length) {
+        callback(false, roomId, {
           _room: {
             isFull: false,
             isPasswordProtected: false,
           },
         });
-      } else {
-        var extra = listOfRooms[roomid].extra;
-        if (typeof extra !== "object" || !extra) {
-          extra = {
-            value: extra,
-          };
-        }
-        extra._room = {
-          isFull:
-            listOfRooms[roomid].participants.length >=
-            listOfRooms[roomid].maxParticipantsAllowed,
-          isPasswordProtected:
-            listOfRooms[roomid].password &&
-            listOfRooms[roomid].password.toString().replace(/ /g, "").length,
-        };
-        callback(true, roomid, extra);
+        return;
       }
+      var extra = listOfRooms[roomId].extra;
+      if (typeof extra !== "object" || !extra) {
+        extra = {
+          value: extra,
+        };
+      }
+      extra._room = {
+        isFull:
+          listOfRooms[roomId].participants.length >=
+          listOfRooms[roomId].maxParticipantsAllowed,
+        isPasswordProtected:
+          listOfRooms[roomId].password &&
+          listOfRooms[roomId].password.toString().replace(/ /g, "").length,
+      };
+      callback(true, roomId, extra);
     } catch (e) {
       console.log("check-presence", e);
     }
@@ -169,7 +169,7 @@ export default function (socket) {
   function onMessageCallback(message) {
     try {
       if (!User.get(message.sender)) {
-        socket.emit("user-not-found", message.sender);
+        currentUser.socket.emit("user-not-found", message.sender);
         return;
       }
 
@@ -225,14 +225,14 @@ export default function (socket) {
       if (!currentUser.admininfo.sessionid) return;
 
       // var roomid = message.remoteUserId;
-      var roomid = currentUser.admininfo.sessionid;
+      const roomId = currentUser.admininfo.sessionid;
 
-      if (!listOfRooms[roomid]) return; // find a solution?
+      if (!listOfRooms[roomId]) return; // find a solution?
 
       if (
-        listOfRooms[roomid].participants.length >=
-          listOfRooms[roomid].maxParticipantsAllowed &&
-        listOfRooms[roomid].participants.indexOf(currentUser.userId) === -1
+        listOfRooms[roomId].participants.length >=
+          listOfRooms[roomId].maxParticipantsAllowed &&
+        listOfRooms[roomId].participants.indexOf(currentUser.userId) === -1
       ) {
         // room is full
         // todo: how to tell user that room is full?
@@ -242,11 +242,11 @@ export default function (socket) {
       }
 
       if (
-        listOfRooms[roomid].session &&
-        (listOfRooms[roomid].session.oneway === true ||
-          listOfRooms[roomid].session.broadcast === true)
+        listOfRooms[roomId].session &&
+        (listOfRooms[roomId].session.oneway === true ||
+          listOfRooms[roomId].session.broadcast === true)
       ) {
-        var owner = listOfRooms[roomid].owner;
+        const owner = listOfRooms[roomId].owner;
         if (User.get(owner)) {
           message.remoteUserId = owner;
         }
@@ -254,13 +254,13 @@ export default function (socket) {
       }
 
       // redundant?
-      // appendToRoom(roomid, currentUser.userId);
+      // appendToRoom(roomId, currentUser.userId);
 
       // connect with all participants
-      listOfRooms[roomid].participants.forEach(function (pid) {
+      listOfRooms[roomId].participants.forEach(function (pid) {
         if (pid === currentUser.userId || !User.get(pid)) return;
 
-        var user = User.get(pid);
+        const user = User.get(pid);
         message.remoteUserId = pid;
         user.socket.emit(currentUser.socketMessageEvent, message);
       });
@@ -296,15 +296,15 @@ export default function (socket) {
 
   function closeOrShiftRoom() {
     try {
-      var roomid = currentUser.admininfo.sessionid;
+      const roomId = currentUser.admininfo.sessionid;
 
-      if (!roomid || !listOfRooms[roomid]) {
+      if (!roomId || !listOfRooms[roomId]) {
         return;
       }
 
-      if (currentUser.userId !== listOfRooms[roomid].owner) {
-        listOfRooms[roomid].participants = listOfRooms[
-          roomid
+      if (currentUser.userId !== listOfRooms[roomId].owner) {
+        listOfRooms[roomId].participants = listOfRooms[
+          roomId
         ].participants.filter(
           (pid) => pid && pid != currentUser.userId && User.get(pid)
         );
@@ -314,38 +314,31 @@ export default function (socket) {
       console.log("1 >", currentUser.autoCloseEntireSession);
       if (
         currentUser.autoCloseEntireSession ||
-        listOfRooms[roomid].participants.length <= 1
+        listOfRooms[roomId].participants.length <= 1
       ) {
-        delete listOfRooms[roomid];
+        delete listOfRooms[roomId];
         return;
       }
 
-      var firstParticipant;
-      listOfRooms[roomid].participants.forEach(function (pid) {
-        if (firstParticipant || pid === currentUser.userId) return;
-        if (!User.get(pid)) return;
-        firstParticipant = User.get(pid);
-      });
+      const firstParticipant = listOfRooms[roomId].participants.find(
+        (pid) => !(pid === currentUser.userId || !User.get(pid))
+      );
 
       if (!firstParticipant) {
-        delete listOfRooms[roomid];
+        delete listOfRooms[roomId];
         return;
       }
 
       // reset owner priviliges
-      listOfRooms[roomid].owner = firstParticipant.currentUser.userId;
+      listOfRooms[roomId].owner = firstParticipant.currentUser.userId;
 
       // redundant?
-      firstParticipant.socket.emit("set-isInitiator-true", roomid);
+      firstParticipant.socket.emit("set-isInitiator-true", roomId);
 
       // remove from room's participants list
-      var newParticipantsList = [];
-      listOfRooms[roomid].participants.forEach(function (pid) {
-        if (pid != currentUser.userId) {
-          newParticipantsList.push(pid);
-        }
-      });
-      listOfRooms[roomid].participants = newParticipantsList;
+      listOfRooms[roomId].participants = listOfRooms[
+        roomId
+      ].participants.filter((pid) => pid != currentUser.userId);
     } catch (e) {
       console.log("closeOrShiftRoom", e);
     }
@@ -381,6 +374,7 @@ export default function (socket) {
       }
 
       if (!User.get(message.sender)) {
+        console.log("wowo!");
         // User.get(message.sender) = {
         //   socket: socket,
         //   connectedWith: {},
@@ -489,17 +483,6 @@ export default function (socket) {
       // if already joined a room, either leave or close it
       closeOrShiftRoom();
 
-      // maybe redundant?
-      if (!currentUser) {
-        // currentUser = {
-        //   socket: socket,
-        //   connectedWith: {},
-        //   extra: arg.extra,
-        //   admininfo: {},
-        //   socketMessageEvent: currentUser.socketMessageEvent,
-        //   socketCustomEvent: currentUser.socketCustomEvent ,
-        // };
-      }
       currentUser.extra = arg.extra;
     } catch (e) {
       console.log("join-room", e);
@@ -574,18 +557,20 @@ export default function (socket) {
     try {
       // inform all connected users
       if (currentUser) {
-        for (var s in currentUser.connectedWith) {
-          currentUser.connectedWith[s].emit(
+        Object.keys(currentUser.connectedWith).forEach((pid) => {
+          currentUser.connectedWith[pid].emit(
             "user-disconnected",
             currentUser.userId
           );
 
-          // sending duplicate message to same socket?
-          if (User.get(s) && User.get(s).connectedWith[currentUser.userId]) {
-            delete User.get(s).connectedWith[currentUser.userId];
-            User.get(s).socket.emit("user-disconnected", currentUser.userId);
+          if (
+            User.get(pid) &&
+            User.get(pid).connectedWith[currentUser.userId]
+          ) {
+            delete User.get(pid).connectedWith[currentUser.userId];
+            User.get(pid).socket.emit("user-disconnected", currentUser.userId);
           }
-        }
+        });
       }
     } catch (e) {
       console.log("disconnect", e);
