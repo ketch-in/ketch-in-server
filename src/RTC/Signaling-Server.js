@@ -292,44 +292,6 @@ export default function (socket) {
     callback(active, roomId, active ? room.extra : Room.extra);
   });
 
-  function onMessageCallback(message) {
-    try {
-      const sender = User.get(message.sender);
-      if (!sender) {
-        currentUser.emit("user-not-found", message.sender);
-        return;
-      }
-
-      const remoteUser = User.get(message.remoteUserId);
-
-      // we don't need "connectedWith" anymore
-      // todo: remove all these redundant codes
-      // fire "onUserStatusChanged" for room-participants instead of individual users
-      // rename "user-connected" to "user-status-changed"
-      if (
-        !message.message.userLeft &&
-        !sender.connectedWith[message.remoteUserId] &&
-        remoteUser
-      ) {
-        sender.connectedWith[message.remoteUserId] = remoteUser.socket;
-        sender.emit("user-connected", message.remoteUserId);
-
-        remoteUser.connectedWith[message.sender] = socket;
-        remoteUser.emit("user-connected", message.sender);
-      }
-
-      if (sender && sender.connectedWith[message.remoteUserId] && currentUser) {
-        message.extra = currentUser.extra;
-        sender.connectedWith[message.remoteUserId].emit(
-          "file-sharing-demo",
-          message
-        );
-      }
-    } catch (e) {
-      console.log("onMessageCallback", e);
-    }
-  }
-
   // 내가 속하게될 방에 접속합니다.
   function joinARoom(message) {
     const room = Room.get(currentUser.admininfo.sessionid);
@@ -408,7 +370,37 @@ export default function (socket) {
       return joinARoom(message);
     }
 
-    onMessageCallback(message);
+    const sender = User.get(message.sender);
+    if (!sender) {
+      currentUser.emit("user-not-found", message.sender);
+      return;
+    }
+
+    const remoteUser = User.get(message.remoteUserId);
+
+    // we don't need "connectedWith" anymore
+    // todo: remove all these redundant codes
+    // fire "onUserStatusChanged" for room-participants instead of individual users
+    // rename "user-connected" to "user-status-changed"
+    if (
+      !message.message.userLeft &&
+      !sender.connectedWith[message.remoteUserId] &&
+      remoteUser
+    ) {
+      sender.connectedWith[message.remoteUserId] = remoteUser.socket;
+      sender.emit("user-connected", message.remoteUserId);
+
+      remoteUser.connectedWith[message.sender] = socket;
+      remoteUser.emit("user-connected", message.sender);
+    }
+
+    if (sender.connectedWith[message.remoteUserId]) {
+      message.extra = currentUser.extra;
+      sender.connectedWith[message.remoteUserId].emit(
+        "file-sharing-demo",
+        message
+      );
+    }
   });
 
   // 방을 새로 생성합니다.
