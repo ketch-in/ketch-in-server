@@ -49,7 +49,7 @@ import addSocket from "./RTC/Signaling-Server";
 const io = new Server(server, { cors: { origin: "*" } });
 
 io.on("connection", (socket) => {
-  addSocket(socket, {});
+  addSocket(socket);
 
   socket.onAny((title, ...args) => {
     console.log(">>>>> ", title);

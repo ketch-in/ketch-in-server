@@ -1,871 +1,634 @@
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-/* @ts-ignore */
-
-// Muaz Khan      - www.MuazKhan.com
-// MIT License    - www.WebRTC-Experiment.com/licence
-// Documentation  - github.com/muaz-khan/RTCMultiConnection
-
-var listOfUsers = {};
 var listOfRooms = {};
 
-var adminSocket;
-
-// for scalable-broadcast demos
-var ScalableBroadcast;
-
 import { CONST_STRINGS } from "./CONST_STRINGS";
-import pushLogs from "./pushLogs";
-import isAdminAuthorized from "./verify-admin";
 
-export default function (socket, config) {
-  config = config || {};
-
-  onConnection(socket);
-
-  // to secure your socket.io usage: (via: docs/tips-tricks.md)
-  // io.set('origins', 'https://domain.com');
-
-  function appendUser(socket, params) {
+function parseExtra({ extra }) {
+  if (!extra) {
+    return {};
+  }
+  if (typeof extra === "object") {
+    return extra;
+  }
+  if (typeof extra === "string") {
     try {
-      var extra = params.extra;
+      return JSON.parse(extra);
+    } catch {
+      console.log("parseExtra > JSON Parse Error");
+    }
+  }
+  return {
+    value: extra,
+  };
+}
+class User {
+  static users = {};
 
-      var params = socket.handshake.query;
+  static add(user) {
+    if (this.users[user.userId]) {
+      return this;
+    }
+    this.users[user.userId] = user;
+    return this;
+  }
 
-      if (params.extra) {
-        try {
-          if (typeof params.extra === "string") {
-            params.extra = JSON.parse(params.extra);
+  static remove(user) {
+    return this.removeById(user.userId);
+  }
+
+  static removeById(userId) {
+    if (!this.users[userId]) {
+      return this;
+    }
+    delete this.users[userId];
+    return this;
+  }
+
+  static get(userId) {
+    if (!this.users[userId]) {
+      return null;
+    }
+    return this.users[userId];
+  }
+
+  static createId(userId) {
+    if (!userId) {
+      return this.createId((Math.random() * 1000).toString().replace(".", ""));
+    }
+    return this.users[userId] ? this.createId() : userId;
+  }
+
+  constructor(socket) {
+    this.socket = socket;
+    this.userId = User.createId(this.params.userid);
+
+    if (this.userId !== this.params.userid) {
+      // id가 변경되었을 경우 클라이언트에 고지
+      socket.emit("userid-already-taken", this.params.userid, this.userId);
+    }
+
+    this.extra = parseExtra(this.params);
+    this.autoCloseEntireSession = [true, "true"].includes(
+      this.params.autoCloseEntireSession
+    );
+    this.connectedWith = {};
+    this.admininfo = {};
+
+    User.add(this);
+  }
+
+  get socketMessageEvent() {
+    return this.params.msgEvent || "RTCMultiConnection-Message";
+  }
+
+  get socketCustomEvent() {
+    return this.params.socketCustomEvent || "";
+  }
+
+  get params() {
+    return this.socket.handshake.query;
+  }
+
+  get maxParticipantsAllowed() {
+    return parseInt(this.params.maxParticipantsAllowed || "0") || 1000;
+  }
+}
+
+export default function (socket) {
+  const currentUser = new User(socket);
+
+  socket.on("extra-data-updated", function (extra) {
+    try {
+      if (!currentUser) return;
+
+      if (currentUser.admininfo) {
+        currentUser.admininfo.extra = extra;
+      }
+
+      // todo: use "admininfo.extra" instead of below one
+      currentUser.extra = extra;
+
+      try {
+        for (var user in currentUser.connectedWith) {
+          try {
+            User.get(user).socket.emit(
+              "extra-data-updated",
+              currentUser.userId,
+              extra
+            );
+          } catch (e) {
+            console.log("extra-data-updated.connectedWith", e);
           }
-          extra = params.extra;
-        } catch (e) {
-          extra = params.extra;
+        }
+      } catch (e) {
+        console.log("extra-data-updated.connectedWith", e);
+      }
+
+      // sent alert to all room participants
+      if (!currentUser.admininfo) {
+        return;
+      }
+
+      var roomid = currentUser.admininfo.sessionid;
+      if (roomid && listOfRooms[roomid]) {
+        if (currentUser.userId == listOfRooms[roomid].owner) {
+          // room's extra must match owner's extra
+          listOfRooms[roomid].extra = extra;
+        }
+        listOfRooms[roomid].participants.forEach(function (pid) {
+          try {
+            var user = User.get(pid);
+            if (!user) {
+              // todo: remove this user from participants list
+              return;
+            }
+
+            user.socket.emit("extra-data-updated", currentUser.userId, extra);
+          } catch (e) {
+            console.log("extra-data-updated.participants", e);
+          }
+        });
+      }
+    } catch (e) {
+      console.log("extra-data-updated", e);
+    }
+  });
+
+  socket.on("check-presence", function (roomid, callback) {
+    try {
+      if (!listOfRooms[roomid] || !listOfRooms[roomid].participants.length) {
+        callback(false, roomid, {
+          _room: {
+            isFull: false,
+            isPasswordProtected: false,
+          },
+        });
+      } else {
+        var extra = listOfRooms[roomid].extra;
+        if (typeof extra !== "object" || !extra) {
+          extra = {
+            value: extra,
+          };
+        }
+        extra._room = {
+          isFull:
+            listOfRooms[roomid].participants.length >=
+            listOfRooms[roomid].maxParticipantsAllowed,
+          isPasswordProtected:
+            listOfRooms[roomid].password &&
+            listOfRooms[roomid].password.toString().replace(/ /g, "").length,
+        };
+        callback(true, roomid, extra);
+      }
+    } catch (e) {
+      console.log("check-presence", e);
+    }
+  });
+
+  function onMessageCallback(message) {
+    try {
+      if (!User.get(message.sender)) {
+        socket.emit("user-not-found", message.sender);
+        return;
+      }
+
+      // we don't need "connectedWith" anymore
+      // todo: remove all these redundant codes
+      // fire "onUserStatusChanged" for room-participants instead of individual users
+      // rename "user-connected" to "user-status-changed"
+      if (
+        !message.message.userLeft &&
+        !User.get(message.sender).connectedWith[message.remoteUserId] &&
+        !!User.get(message.remoteUserId)
+      ) {
+        User.get(message.sender).connectedWith[message.remoteUserId] = User.get(
+          message.remoteUserId
+        ).socket;
+        User.get(message.sender).socket.emit(
+          "user-connected",
+          message.remoteUserId
+        );
+
+        // if (!User.get(message.remoteUserId)) {
+        //   User.get(message.remoteUserId) = {
+        //     socket: null,
+        //     connectedWith: {},
+        //     extra: {},
+        //     admininfo: {},
+        //   };
+        // }
+
+        User.get(message.remoteUserId).connectedWith[message.sender] = socket;
+
+        if (User.get(message.remoteUserId).socket) {
+          User.get(message.remoteUserId).socket.emit(
+            "user-connected",
+            message.sender
+          );
         }
       }
 
-      listOfUsers[socket.userid] = {
-        socket: socket,
-        connectedWith: {},
-        extra: extra || {},
-        admininfo: {},
-        socketMessageEvent: params.socketMessageEvent || "",
-        socketCustomEvent: params.socketCustomEvent || "",
-      };
+      if (
+        User.get(message.sender) &&
+        User.get(message.sender).connectedWith[message.remoteUserId] &&
+        currentUser
+      ) {
+        message.extra = currentUser.extra;
+        User.get(message.sender).connectedWith[message.remoteUserId].emit(
+          currentUser.socketMessageEvent,
+          message
+        );
+      }
     } catch (e) {
-      pushLogs(config, "appendUser", e);
+      console.log("onMessageCallback", e);
     }
   }
 
-  function onConnection(socket) {
-    var params = socket.handshake.query;
+  function joinARoom(message) {
+    try {
+      if (!currentUser.admininfo || !currentUser.admininfo.sessionid) return;
 
-    if (!params.userid) {
-      params.userid = (Math.random() * 100).toString().replace(".", "");
-    }
+      // var roomid = message.remoteUserId;
+      var roomid = currentUser.admininfo.sessionid;
 
-    if (!params.sessionid) {
-      params.sessionid = (Math.random() * 100).toString().replace(".", "");
-    }
+      if (!listOfRooms[roomid]) return; // find a solution?
 
-    if (params.extra) {
-      try {
-        params.extra = JSON.parse(params.extra);
-      } catch (e) {
-        params.extra = {};
+      if (
+        listOfRooms[roomid].participants.length >=
+          listOfRooms[roomid].maxParticipantsAllowed &&
+        listOfRooms[roomid].participants.indexOf(currentUser.userId) === -1
+      ) {
+        // room is full
+        // todo: how to tell user that room is full?
+        // do not fire "room-full" event
+        // find something else
+        return;
       }
-    } else {
-      params.extra = {};
+
+      if (
+        listOfRooms[roomid].session &&
+        (listOfRooms[roomid].session.oneway === true ||
+          listOfRooms[roomid].session.broadcast === true)
+      ) {
+        var owner = listOfRooms[roomid].owner;
+        if (User.get(owner)) {
+          message.remoteUserId = owner;
+        }
+        return;
+      }
+
+      // redundant?
+      // appendToRoom(roomid, currentUser.userId);
+
+      // connect with all participants
+      listOfRooms[roomid].participants.forEach(function (pid) {
+        if (pid === currentUser.userId || !User.get(pid)) return;
+
+        var user = User.get(pid);
+        message.remoteUserId = pid;
+        user.socket.emit(currentUser.socketMessageEvent, message);
+      });
+    } catch (e) {
+      console.log("joinARoom", e);
     }
+  }
 
-    var socketMessageEvent = params.msgEvent || "RTCMultiConnection-Message";
+  function appendToRoom(roomid, userid) {
+    try {
+      if (!listOfRooms[roomid]) {
+        listOfRooms[roomid] = {
+          maxParticipantsAllowed: currentUser.maxParticipantsAllowed,
+          owner: userid, // this can change if owner leaves and if control shifts
+          participants: [userid],
+          extra: {}, // usually owner's extra-data
+          socketMessageEvent: "",
+          socketCustomEvent: "",
+          identifier: "",
+          session: {
+            audio: true,
+            video: true,
+          },
+        };
+      }
 
-    // for admin's record
-    params.socketMessageEvent = socketMessageEvent;
+      if (listOfRooms[roomid].participants.indexOf(userid) !== -1) return;
+      listOfRooms[roomid].participants.push(userid);
+    } catch (e) {
+      console.log("appendToRoom", e);
+    }
+  }
 
-    var autoCloseEntireSession =
-      params.autoCloseEntireSession === true ||
-      params.autoCloseEntireSession === "true";
-    var sessionid = params.sessionid;
-    var maxParticipantsAllowed =
-      parseInt(params.maxParticipantsAllowed || 1000) || 1000;
+  function closeOrShiftRoom() {
+    try {
+      if (!currentUser.admininfo) {
+        return;
+      }
 
-    // do not allow to override userid
-    if (!!listOfUsers[params.userid]) {
-      var useridAlreadyTaken = params.userid;
-      params.userid = (Math.random() * 1000).toString().replace(".", "");
-      socket.emit("userid-already-taken", useridAlreadyTaken, params.userid);
+      var roomid = currentUser.admininfo.sessionid;
+
+      if (!roomid || !listOfRooms[roomid]) {
+        return;
+      }
+
+      if (currentUser.userId !== listOfRooms[roomid].owner) {
+        listOfRooms[roomid].participants = listOfRooms[
+          roomid
+        ].participants.filter(
+          (pid) => pid && pid != currentUser.userId && User.get(pid)
+        );
+        return;
+      }
+
+      console.log("1 >", currentUser.autoCloseEntireSession);
+      if (
+        currentUser.autoCloseEntireSession ||
+        listOfRooms[roomid].participants.length <= 1
+      ) {
+        delete listOfRooms[roomid];
+        return;
+      }
+
+      var firstParticipant;
+      listOfRooms[roomid].participants.forEach(function (pid) {
+        if (firstParticipant || pid === currentUser.userId) return;
+        if (!User.get(pid)) return;
+        firstParticipant = User.get(pid);
+      });
+
+      if (!firstParticipant) {
+        delete listOfRooms[roomid];
+        return;
+      }
+
+      // reset owner priviliges
+      listOfRooms[roomid].owner = firstParticipant.currentUser.userId;
+
+      // redundant?
+      firstParticipant.socket.emit("set-isInitiator-true", roomid);
+
+      // remove from room's participants list
+      var newParticipantsList = [];
+      listOfRooms[roomid].participants.forEach(function (pid) {
+        if (pid != currentUser.userId) {
+          newParticipantsList.push(pid);
+        }
+      });
+      listOfRooms[roomid].participants = newParticipantsList;
+    } catch (e) {
+      console.log("closeOrShiftRoom", e);
+    }
+  }
+
+  socket.on(currentUser.socketMessageEvent, function (message, callback) {
+    if (message.remoteUserId && message.remoteUserId === currentUser.userId) {
+      // remoteUserId MUST be unique
       return;
     }
 
-    socket.userid = params.userid;
-    appendUser(socket, params);
-
-    socket.on("extra-data-updated", function (extra) {
-      try {
-        if (!listOfUsers[socket.userid]) return;
-
-        if (listOfUsers[socket.userid].socket.admininfo) {
-          listOfUsers[socket.userid].socket.admininfo.extra = extra;
-        }
-
-        // todo: use "admininfo.extra" instead of below one
-        listOfUsers[socket.userid].extra = extra;
-
-        try {
-          for (var user in listOfUsers[socket.userid].connectedWith) {
-            try {
-              listOfUsers[user].socket.emit(
-                "extra-data-updated",
-                socket.userid,
-                extra
-              );
-            } catch (e) {
-              pushLogs(config, "extra-data-updated.connectedWith", e);
-            }
-          }
-        } catch (e) {
-          pushLogs(config, "extra-data-updated.connectedWith", e);
-        }
-
-        // sent alert to all room participants
-        if (!socket.admininfo) {
-          return;
-        }
-
-        var roomid = socket.admininfo.sessionid;
-        if (roomid && listOfRooms[roomid]) {
-          if (socket.userid == listOfRooms[roomid].owner) {
-            // room's extra must match owner's extra
-            listOfRooms[roomid].extra = extra;
-          }
-          listOfRooms[roomid].participants.forEach(function (pid) {
-            try {
-              var user = listOfUsers[pid];
-              if (!user) {
-                // todo: remove this user from participants list
-                return;
-              }
-
-              user.socket.emit("extra-data-updated", socket.userid, extra);
-            } catch (e) {
-              pushLogs(config, "extra-data-updated.participants", e);
-            }
-          });
-        }
-      } catch (e) {
-        pushLogs(config, "extra-data-updated", e);
-      }
-    });
-
-    socket.on("get-remote-user-extra-data", function (remoteUserId, callback) {
-      callback = callback || function () {};
-      if (!remoteUserId || !listOfUsers[remoteUserId]) {
-        callback(CONST_STRINGS.USERID_NOT_AVAILABLE);
-        return;
-      }
-      callback(listOfUsers[remoteUserId].extra);
-    });
-
-    var dontDuplicateListeners = {};
-    socket.on("set-custom-socket-event-listener", function (customEvent) {
-      if (dontDuplicateListeners[customEvent]) return;
-      dontDuplicateListeners[customEvent] = customEvent;
-
-      socket.on(customEvent, function (message) {
-        try {
-          socket.broadcast.emit(customEvent, message);
-        } catch (e) {}
-      });
-    });
-
-    socket.on("changed-uuid", function (newUserId, callback) {
-      callback = callback || function () {};
-
-      try {
-        if (
-          listOfUsers[socket.userid] &&
-          listOfUsers[socket.userid].socket.userid == socket.userid
-        ) {
-          if (newUserId === socket.userid) return;
-
-          var oldUserId = socket.userid;
-          listOfUsers[newUserId] = listOfUsers[oldUserId];
-          listOfUsers[newUserId].socket.userid = socket.userid = newUserId;
-          delete listOfUsers[oldUserId];
-
-          callback();
-          return;
-        }
-
-        socket.userid = newUserId;
-        appendUser(socket, params);
-
-        callback();
-      } catch (e) {
-        pushLogs(config, "changed-uuid", e);
-      }
-    });
-
-    socket.on("set-password", function (password, callback) {
-      try {
-        callback = callback || function () {};
-
-        if (!socket.admininfo) {
-          callback(null, null, CONST_STRINGS.DID_NOT_JOIN_ANY_ROOM);
-          return;
-        }
-
-        var roomid = socket.admininfo.sessionid;
-
-        if (listOfRooms[roomid] && listOfRooms[roomid].owner == socket.userid) {
-          listOfRooms[roomid].password = password;
-          callback(true, roomid, null);
-        } else {
-          callback(false, roomid, CONST_STRINGS.ROOM_PERMISSION_DENIED);
-        }
-      } catch (e) {
-        pushLogs(config, "set-password", e);
-      }
-    });
-
-    socket.on("disconnect-with", function (remoteUserId, callback) {
-      try {
-        if (
-          listOfUsers[socket.userid] &&
-          listOfUsers[socket.userid].connectedWith[remoteUserId]
-        ) {
-          delete listOfUsers[socket.userid].connectedWith[remoteUserId];
-          socket.emit("user-disconnected", remoteUserId);
-        }
-
-        if (!listOfUsers[remoteUserId]) return callback();
-
-        if (listOfUsers[remoteUserId].connectedWith[socket.userid]) {
-          delete listOfUsers[remoteUserId].connectedWith[socket.userid];
-          listOfUsers[remoteUserId].socket.emit(
-            "user-disconnected",
-            socket.userid
-          );
-        }
-        callback();
-      } catch (e) {
-        pushLogs(config, "disconnect-with", e);
-      }
-    });
-
-    socket.on("close-entire-session", function (callback) {
-      try {
-        if (!callback || typeof callback !== "function") {
-          callback = function () {};
-        }
-
-        var user = listOfUsers[socket.userid];
-
-        if (!user) return callback(false, CONST_STRINGS.USERID_NOT_AVAILABLE);
-        if (!user.roomid)
-          return callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
-        if (!socket.admininfo)
-          return callback(false, CONST_STRINGS.INVALID_SOCKET);
-
-        var room = listOfRooms[user.roomid];
-        if (!room) return callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
-        if (room.owner !== user.userid)
-          return callback(false, CONST_STRINGS.ROOM_PERMISSION_DENIED);
-
-        autoCloseEntireSession = true;
-        closeOrShiftRoom();
-
-        callback(true);
-      } catch (e) {
-        pushLogs(config, "close-entire-session", e);
-      }
-    });
-
-    socket.on("check-presence", function (roomid, callback) {
-      try {
-        if (!listOfRooms[roomid] || !listOfRooms[roomid].participants.length) {
-          callback(false, roomid, {
-            _room: {
-              isFull: false,
-              isPasswordProtected: false,
-            },
-          });
-        } else {
-          var extra = listOfRooms[roomid].extra;
-          if (typeof extra !== "object" || !extra) {
-            extra = {
-              value: extra,
-            };
-          }
-          extra._room = {
-            isFull:
-              listOfRooms[roomid].participants.length >=
-              listOfRooms[roomid].maxParticipantsAllowed,
-            isPasswordProtected:
-              listOfRooms[roomid].password &&
-              listOfRooms[roomid].password.toString().replace(/ /g, "").length,
-          };
-          callback(true, roomid, extra);
-        }
-      } catch (e) {
-        pushLogs(config, "check-presence", e);
-      }
-    });
-
-    function onMessageCallback(message) {
-      try {
-        if (!listOfUsers[message.sender]) {
-          socket.emit("user-not-found", message.sender);
-          return;
-        }
-
-        // we don't need "connectedWith" anymore
-        // todo: remove all these redundant codes
-        // fire "onUserStatusChanged" for room-participants instead of individual users
-        // rename "user-connected" to "user-status-changed"
-        if (
-          !message.message.userLeft &&
-          !listOfUsers[message.sender].connectedWith[message.remoteUserId] &&
-          !!listOfUsers[message.remoteUserId]
-        ) {
-          listOfUsers[message.sender].connectedWith[message.remoteUserId] =
-            listOfUsers[message.remoteUserId].socket;
-          listOfUsers[message.sender].socket.emit(
-            "user-connected",
-            message.remoteUserId
-          );
-
-          if (!listOfUsers[message.remoteUserId]) {
-            listOfUsers[message.remoteUserId] = {
-              socket: null,
-              connectedWith: {},
-              extra: {},
-              admininfo: {},
-            };
-          }
-
-          listOfUsers[message.remoteUserId].connectedWith[message.sender] =
-            socket;
-
-          if (listOfUsers[message.remoteUserId].socket) {
-            listOfUsers[message.remoteUserId].socket.emit(
-              "user-connected",
-              message.sender
-            );
-          }
-        }
-
-        if (
-          listOfUsers[message.sender] &&
-          listOfUsers[message.sender].connectedWith[message.remoteUserId] &&
-          listOfUsers[socket.userid]
-        ) {
-          message.extra = listOfUsers[socket.userid].extra;
-          listOfUsers[message.sender].connectedWith[message.remoteUserId].emit(
-            socketMessageEvent,
-            message
-          );
-        }
-      } catch (e) {
-        pushLogs(config, "onMessageCallback", e);
-      }
-    }
-
-    function joinARoom(message) {
-      try {
-        if (!socket.admininfo || !socket.admininfo.sessionid) return;
-
-        // var roomid = message.remoteUserId;
-        var roomid = socket.admininfo.sessionid;
-
-        if (!listOfRooms[roomid]) return; // find a solution?
-
-        if (
-          listOfRooms[roomid].participants.length >=
-            listOfRooms[roomid].maxParticipantsAllowed &&
-          listOfRooms[roomid].participants.indexOf(socket.userid) === -1
-        ) {
-          // room is full
-          // todo: how to tell user that room is full?
-          // do not fire "room-full" event
-          // find something else
-          return;
-        }
-
-        if (
-          listOfRooms[roomid].session &&
-          (listOfRooms[roomid].session.oneway === true ||
-            listOfRooms[roomid].session.broadcast === true)
-        ) {
-          var owner = listOfRooms[roomid].owner;
-          if (listOfUsers[owner]) {
-            message.remoteUserId = owner;
-          }
-          return;
-        }
-
-        // redundant?
-        // appendToRoom(roomid, socket.userid);
-
-        // connect with all participants
-        listOfRooms[roomid].participants.forEach(function (pid) {
-          if (pid === socket.userid || !listOfUsers[pid]) return;
-
-          var user = listOfUsers[pid];
-          message.remoteUserId = pid;
-          user.socket.emit(socketMessageEvent, message);
-        });
-      } catch (e) {
-        pushLogs(config, "joinARoom", e);
-      }
-    }
-
-    function appendToRoom(roomid, userid) {
-      try {
-        if (!listOfRooms[roomid]) {
-          listOfRooms[roomid] = {
-            maxParticipantsAllowed:
-              parseInt(params.maxParticipantsAllowed || 1000) || 1000,
-            owner: userid, // this can change if owner leaves and if control shifts
-            participants: [userid],
-            extra: {}, // usually owner's extra-data
-            socketMessageEvent: "",
-            socketCustomEvent: "",
-            identifier: "",
-            session: {
-              audio: true,
-              video: true,
-            },
-          };
-        }
-
-        if (listOfRooms[roomid].participants.indexOf(userid) !== -1) return;
-        listOfRooms[roomid].participants.push(userid);
-      } catch (e) {
-        pushLogs(config, "appendToRoom", e);
-      }
-    }
-
-    function closeOrShiftRoom() {
-      try {
-        if (!socket.admininfo) {
-          return;
-        }
-
-        var roomid = socket.admininfo.sessionid;
-
-        if (roomid && listOfRooms[roomid]) {
-          if (socket.userid === listOfRooms[roomid].owner) {
-            if (
-              autoCloseEntireSession === false &&
-              listOfRooms[roomid].participants.length > 1
-            ) {
-              var firstParticipant;
-              listOfRooms[roomid].participants.forEach(function (pid) {
-                if (firstParticipant || pid === socket.userid) return;
-                if (!listOfUsers[pid]) return;
-                firstParticipant = listOfUsers[pid];
-              });
-
-              if (firstParticipant) {
-                // reset owner priviliges
-                listOfRooms[roomid].owner = firstParticipant.socket.userid;
-
-                // redundant?
-                firstParticipant.socket.emit("set-isInitiator-true", roomid);
-
-                // remove from room's participants list
-                var newParticipantsList = [];
-                listOfRooms[roomid].participants.forEach(function (pid) {
-                  if (pid != socket.userid) {
-                    newParticipantsList.push(pid);
-                  }
-                });
-                listOfRooms[roomid].participants = newParticipantsList;
-              } else {
-                delete listOfRooms[roomid];
-              }
-            } else {
-              delete listOfRooms[roomid];
-            }
-          } else {
-            var newParticipantsList = [];
-            listOfRooms[roomid].participants.forEach(function (pid) {
-              if (pid && pid != socket.userid && listOfUsers[pid]) {
-                newParticipantsList.push(pid);
-              }
-            });
-            listOfRooms[roomid].participants = newParticipantsList;
-          }
-        }
-      } catch (e) {
-        pushLogs(config, "closeOrShiftRoom", e);
-      }
-    }
-
-    socket.on(socketMessageEvent, function (message, callback) {
-      if (message.remoteUserId && message.remoteUserId === socket.userid) {
-        // remoteUserId MUST be unique
+    try {
+      if (
+        message.remoteUserId &&
+        message.remoteUserId != "system" &&
+        message.message.newParticipationRequest
+      ) {
+        joinARoom(message);
         return;
       }
 
-      try {
-        if (
-          message.remoteUserId &&
-          message.remoteUserId != "system" &&
-          message.message.newParticipationRequest
-        ) {
-          joinARoom(message);
-          return;
-        }
-
-        // for v3 backward compatibility; >v3.3.3 no more uses below block
-        if (message.remoteUserId == "system") {
-          if (message.message.detectPresence) {
-            if (message.message.userid === socket.userid) {
-              callback(false, socket.userid);
-              return;
-            }
-
-            callback(
-              !!listOfUsers[message.message.userid],
-              message.message.userid
-            );
+      // for v3 backward compatibility; >v3.3.3 no more uses below block
+      if (message.remoteUserId == "system") {
+        if (message.message.detectPresence) {
+          if (message.message.userid === currentUser.userId) {
+            callback(false, currentUser.userId);
             return;
           }
-        }
 
-        if (!listOfUsers[message.sender]) {
-          listOfUsers[message.sender] = {
-            socket: socket,
-            connectedWith: {},
-            extra: {},
-            admininfo: {},
-          };
-        }
-
-        // if someone tries to join a person who is absent
-        // -------------------------------------- DISABLED
-        if (false && message.message.newParticipationRequest) {
-          var waitFor = 60 * 10; // 10 minutes
-          var invokedTimes = 0;
-          (function repeater() {
-            if (typeof socket == "undefined" || !listOfUsers[socket.userid]) {
-              return;
-            }
-
-            invokedTimes++;
-            if (invokedTimes > waitFor) {
-              socket.emit("user-not-found", message.remoteUserId);
-              return;
-            }
-
-            // if user just come online
-            if (
-              listOfUsers[message.remoteUserId] &&
-              listOfUsers[message.remoteUserId].socket
-            ) {
-              joinARoom(message);
-              return;
-            }
-
-            setTimeout(repeater, 1000);
-          })();
-
+          callback(!!User.get(message.message.userid), message.message.userid);
           return;
         }
-
-        onMessageCallback(message);
-      } catch (e) {
-        pushLogs(config, "on-socketMessageEvent", e);
-      }
-    });
-
-    socket.on("is-valid-password", function (password, roomid, callback) {
-      try {
-        callback = callback || function () {};
-
-        if (!password || !password.toString().replace(/ /g, "").length) {
-          callback(false, roomid, "You did not enter the password.");
-          return;
-        }
-
-        if (!roomid || !roomid.toString().replace(/ /g, "").length) {
-          callback(false, roomid, "You did not enter the room-id.");
-          return;
-        }
-
-        if (!listOfRooms[roomid]) {
-          callback(false, roomid, CONST_STRINGS.ROOM_NOT_AVAILABLE);
-          return;
-        }
-
-        if (!listOfRooms[roomid].password) {
-          callback(false, roomid, "This room do not have any password.");
-          return;
-        }
-
-        if (listOfRooms[roomid].password === password) {
-          callback(true, roomid, false);
-        } else {
-          callback(false, roomid, CONST_STRINGS.INVALID_PASSWORD);
-        }
-      } catch (e) {
-        pushLogs("is-valid-password", e);
-      }
-    });
-
-    socket.on("get-public-rooms", function (identifier, callback) {
-      try {
-        if (
-          !identifier ||
-          !identifier.toString().length ||
-          !identifier.toString().replace(/ /g, "").length
-        ) {
-          callback(null, CONST_STRINGS.PUBLIC_IDENTIFIER_MISSING);
-          return;
-        }
-
-        var rooms = [];
-        Object.keys(listOfRooms).forEach(function (key) {
-          var room = listOfRooms[key];
-          if (
-            !room ||
-            !room.identifier ||
-            !room.identifier.toString().length ||
-            room.identifier !== identifier
-          )
-            return;
-          rooms.push({
-            maxParticipantsAllowed: room.maxParticipantsAllowed,
-            owner: room.owner,
-            participants: room.participants,
-            extra: room.extra,
-            session: room.session,
-            sessionid: key,
-            isRoomFull: room.participants.length >= room.maxParticipantsAllowed,
-            isPasswordProtected:
-              !!room.password && room.password.replace(/ /g, "").length > 0,
-          });
-        });
-
-        callback(rooms);
-      } catch (e) {
-        pushLogs("get-public-rooms", e);
-      }
-    });
-
-    socket.on("open-room", function (arg, callback) {
-      callback = callback || function () {};
-
-      try {
-        // if already joined a room, either leave or close it
-        closeOrShiftRoom();
-
-        if (
-          listOfRooms[arg.sessionid] &&
-          listOfRooms[arg.sessionid].participants.length
-        ) {
-          callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
-          return;
-        }
-
-        // maybe redundant?
-        if (!listOfUsers[socket.userid]) {
-          listOfUsers[socket.userid] = {
-            socket: socket,
-            connectedWith: {},
-            extra: arg.extra,
-            admininfo: {},
-            socketMessageEvent: params.socketMessageEvent || "",
-            socketCustomEvent: params.socketCustomEvent || "",
-          };
-        }
-        listOfUsers[socket.userid].extra = arg.extra;
-
-        if (
-          arg.session &&
-          (arg.session.oneway === true || arg.session.broadcast === true)
-        ) {
-          autoCloseEntireSession = true;
-        }
-      } catch (e) {
-        pushLogs(config, "open-room", e);
       }
 
-      // append this user into participants list
-      appendToRoom(arg.sessionid, socket.userid);
-
-      try {
-        // override owner & session
-
-        // for non-scalable-broadcast demos
-        listOfRooms[arg.sessionid].owner = socket.userid;
-        listOfRooms[arg.sessionid].session = arg.session;
-        listOfRooms[arg.sessionid].extra = arg.extra || {};
-        listOfRooms[arg.sessionid].socketMessageEvent =
-          listOfUsers[socket.userid].socketMessageEvent;
-        listOfRooms[arg.sessionid].socketCustomEvent =
-          listOfUsers[socket.userid].socketCustomEvent;
-        listOfRooms[arg.sessionid].maxParticipantsAllowed =
-          parseInt(params.maxParticipantsAllowed || 1000) || 1000;
-
-        if (arg.identifier && arg.identifier.toString().length) {
-          listOfRooms[arg.sessionid].identifier = arg.identifier;
-        }
-
-        try {
-          if (
-            typeof arg.password !== "undefined" &&
-            arg.password.toString().length
-          ) {
-            // password protected room?
-            listOfRooms[arg.sessionid].password = arg.password;
-          }
-        } catch (e) {
-          pushLogs(config, "open-room.password", e);
-        }
-
-        // admin info are shared only with /admin/
-        listOfUsers[socket.userid].socket.admininfo = {
-          sessionid: arg.sessionid,
-          session: arg.session,
-          mediaConstraints: arg.mediaConstraints,
-          sdpConstraints: arg.sdpConstraints,
-          streams: arg.streams,
-          extra: arg.extra,
-        };
-      } catch (e) {
-        pushLogs(config, "open-room", e);
+      if (!User.get(message.sender)) {
+        // User.get(message.sender) = {
+        //   socket: socket,
+        //   connectedWith: {},
+        //   extra: {},
+        //   admininfo: {},
+        // };
       }
 
-      try {
-        callback(true);
-      } catch (e) {
-        pushLogs(config, "open-room", e);
-      }
-    });
+      onMessageCallback(message);
+    } catch (e) {
+      console.log("on-socketMessageEvent", e);
+    }
+  });
 
-    socket.on("join-room", function (arg, callback) {
-      callback = callback || function () {};
-
-      try {
-        // if already joined a room, either leave or close it
-        closeOrShiftRoom();
-
-        // maybe redundant?
-        if (!listOfUsers[socket.userid]) {
-          listOfUsers[socket.userid] = {
-            socket: socket,
-            connectedWith: {},
-            extra: arg.extra,
-            admininfo: {},
-            socketMessageEvent: params.socketMessageEvent || "",
-            socketCustomEvent: params.socketCustomEvent || "",
-          };
-        }
-        listOfUsers[socket.userid].extra = arg.extra;
-      } catch (e) {
-        pushLogs(config, "join-room", e);
-      }
-
-      try {
-        if (!listOfRooms[arg.sessionid]) {
-          callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
-          return;
-        }
-      } catch (e) {
-        pushLogs(config, "join-room", e);
-      }
-
-      try {
-        if (
-          listOfRooms[arg.sessionid].password &&
-          listOfRooms[arg.sessionid].password != arg.password
-        ) {
-          callback(false, CONST_STRINGS.INVALID_PASSWORD);
-          return;
-        }
-      } catch (e) {
-        pushLogs(config, "join-room.password", e);
-      }
-
-      try {
-        if (
-          listOfRooms[arg.sessionid].participants.length >=
-          listOfRooms[arg.sessionid].maxParticipantsAllowed
-        ) {
-          callback(false, CONST_STRINGS.ROOM_FULL);
-          return;
-        }
-      } catch (e) {
-        pushLogs(config, "join-room.ROOM_FULL", e);
-      }
-
-      // append this user into participants list
-      appendToRoom(arg.sessionid, socket.userid);
-
-      try {
-        // admin info are shared only with /admin/
-        listOfUsers[socket.userid].socket.admininfo = {
-          sessionid: arg.sessionid,
-          session: arg.session,
-          mediaConstraints: arg.mediaConstraints,
-          sdpConstraints: arg.sdpConstraints,
-          streams: arg.streams,
-          extra: arg.extra,
-        };
-      } catch (e) {
-        pushLogs(config, "join-room", e);
-      }
-
-      try {
-        callback(true);
-      } catch (e) {
-        pushLogs(config, "join-room", e);
-      }
-    });
-
-    socket.on("disconnect", function () {
-      try {
-        if (socket && socket.namespace && socket.namespace.sockets) {
-          delete socket.namespace.sockets[this.id];
-        }
-      } catch (e) {
-        pushLogs(config, "disconnect", e);
-      }
-
-      try {
-        // inform all connected users
-        if (listOfUsers[socket.userid]) {
-          for (var s in listOfUsers[socket.userid].connectedWith) {
-            listOfUsers[socket.userid].connectedWith[s].emit(
-              "user-disconnected",
-              socket.userid
-            );
-
-            // sending duplicate message to same socket?
-            if (listOfUsers[s] && listOfUsers[s].connectedWith[socket.userid]) {
-              delete listOfUsers[s].connectedWith[socket.userid];
-              listOfUsers[s].socket.emit("user-disconnected", socket.userid);
-            }
-          }
-        }
-      } catch (e) {
-        pushLogs(config, "disconnect", e);
-      }
-
+  socket.on("open-room", function (arg, callback = console.log) {
+    try {
+      // if already joined a room, either leave or close it
       closeOrShiftRoom();
 
-      delete listOfUsers[socket.userid];
+      if (
+        listOfRooms[arg.sessionid] &&
+        listOfRooms[arg.sessionid].participants.length
+      ) {
+        callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
+        return;
+      }
 
-      if (socket.ondisconnect) {
-        try {
-          // scalable-broadcast.js
-          socket.ondisconnect();
-        } catch (e) {
-          pushLogs("socket.ondisconnect", e);
+      // maybe redundant?
+      if (!currentUser) {
+        // currentUser = {
+        //   socket: socket,
+        //   connectedWith: {},
+        //   extra: arg.extra,
+        //   admininfo: {},
+        //   socketMessageEvent: currentUser.socketMessageEvent,
+        //   socketCustomEvent: currentUser.socketCustomEvent,
+        // };
+      }
+      currentUser.extra = arg.extra;
+
+      if (arg.session && (arg.session.oneway || arg.session.broadcast)) {
+        console.log("2 >", currentUser.autoCloseEntireSession);
+        currentUser.autoCloseEntireSession = true;
+      }
+    } catch (e) {
+      console.log("open-room", e);
+    }
+
+    // append this user into participants list
+    appendToRoom(arg.sessionid, currentUser.userId);
+
+    try {
+      // override owner & session
+
+      // for non-scalable-broadcast demos
+      listOfRooms[arg.sessionid].owner = currentUser.userId;
+      listOfRooms[arg.sessionid].session = arg.session;
+      listOfRooms[arg.sessionid].extra = arg.extra || {};
+      listOfRooms[arg.sessionid].socketMessageEvent = User.get(
+        currentUser.userId
+      ).socketMessageEvent;
+      listOfRooms[arg.sessionid].socketCustomEvent = User.get(
+        currentUser.userId
+      ).socketCustomEvent;
+      listOfRooms[arg.sessionid].maxParticipantsAllowed =
+        currentUser.maxParticipantsAllowed;
+
+      if (arg.identifier && arg.identifier.toString().length) {
+        listOfRooms[arg.sessionid].identifier = arg.identifier;
+      }
+
+      try {
+        if (
+          typeof arg.password !== "undefined" &&
+          arg.password.toString().length
+        ) {
+          // password protected room?
+          listOfRooms[arg.sessionid].password = arg.password;
+        }
+      } catch (e) {
+        console.log("open-room.password", e);
+      }
+
+      // admin info are shared only with /admin/
+      currentUser.admininfo = {
+        sessionid: arg.sessionid,
+        session: arg.session,
+        mediaConstraints: arg.mediaConstraints,
+        sdpConstraints: arg.sdpConstraints,
+        streams: arg.streams,
+        extra: arg.extra,
+      };
+    } catch (e) {
+      console.log("open-room", e);
+    }
+
+    try {
+      callback(true);
+    } catch (e) {
+      console.log("open-room", e);
+    }
+  });
+
+  socket.on("join-room", function (arg, callback = console.log) {
+    try {
+      // if already joined a room, either leave or close it
+      closeOrShiftRoom();
+
+      // maybe redundant?
+      if (!currentUser) {
+        // currentUser = {
+        //   socket: socket,
+        //   connectedWith: {},
+        //   extra: arg.extra,
+        //   admininfo: {},
+        //   socketMessageEvent: currentUser.socketMessageEvent,
+        //   socketCustomEvent: currentUser.socketCustomEvent ,
+        // };
+      }
+      currentUser.extra = arg.extra;
+    } catch (e) {
+      console.log("join-room", e);
+    }
+
+    try {
+      if (!listOfRooms[arg.sessionid]) {
+        callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
+        return;
+      }
+    } catch (e) {
+      console.log("join-room", e);
+    }
+
+    try {
+      if (
+        listOfRooms[arg.sessionid].password &&
+        listOfRooms[arg.sessionid].password != arg.password
+      ) {
+        callback(false, CONST_STRINGS.INVALID_PASSWORD);
+        return;
+      }
+    } catch (e) {
+      console.log("join-room.password", e);
+    }
+
+    try {
+      if (
+        listOfRooms[arg.sessionid].participants.length >=
+        listOfRooms[arg.sessionid].maxParticipantsAllowed
+      ) {
+        callback(false, CONST_STRINGS.ROOM_FULL);
+        return;
+      }
+    } catch (e) {
+      console.log("join-room.ROOM_FULL", e);
+    }
+
+    // append this user into participants list
+    appendToRoom(arg.sessionid, currentUser.userId);
+
+    try {
+      // admin info are shared only with /admin/
+      currentUser.admininfo = {
+        sessionid: arg.sessionid,
+        session: arg.session,
+        mediaConstraints: arg.mediaConstraints,
+        sdpConstraints: arg.sdpConstraints,
+        streams: arg.streams,
+        extra: arg.extra,
+      };
+    } catch (e) {
+      console.log("join-room", e);
+    }
+
+    try {
+      callback(true);
+    } catch (e) {
+      console.log("join-room", e);
+    }
+  });
+
+  socket.on("disconnect", function () {
+    try {
+      if (socket && socket.namespace && socket.namespace.sockets) {
+        delete socket.namespace.sockets[this.id];
+      }
+    } catch (e) {
+      console.log("disconnect", e);
+    }
+
+    try {
+      // inform all connected users
+      if (currentUser) {
+        for (var s in currentUser.connectedWith) {
+          currentUser.connectedWith[s].emit(
+            "user-disconnected",
+            currentUser.userId
+          );
+
+          // sending duplicate message to same socket?
+          if (User.get(s) && User.get(s).connectedWith[currentUser.userId]) {
+            delete User.get(s).connectedWith[currentUser.userId];
+            User.get(s).socket.emit("user-disconnected", currentUser.userId);
+          }
         }
       }
-    });
-  }
+    } catch (e) {
+      console.log("disconnect", e);
+    }
+
+    closeOrShiftRoom();
+
+    User.remove(currentUser.userId);
+
+    if (socket.ondisconnect) {
+      try {
+        // scalable-broadcast.js
+        socket.ondisconnect();
+      } catch (e) {
+        console.log("socket.ondisconnect", e);
+      }
+    }
+  });
 }
