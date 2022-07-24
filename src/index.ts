@@ -83,8 +83,8 @@ io.on("connection", (socket) => {
     callback(active, roomId, active ? room.extra : Room.extra);
   });
 
-  // 데이터 공유여부를 확인하고 정보를 공유합니다.
-  socket.on("file-sharing-demo", function (message) {
+  // 데이터 공유여부를 확인하고 정보를 공유합니다. (커스텀 소켓)
+  socket.on("data-sharing", function (message) {
     if (!message.remoteUserId || message.remoteUserId === currentUser.userId) {
       return;
     }
@@ -107,7 +107,7 @@ io.on("connection", (socket) => {
       Room.join(room.roomId, currentUser.userId);
 
       // connect with all participants
-      room.emitAll("file-sharing-demo", (pid) =>
+      room.emitAll("data-sharing", (pid) =>
         pid === currentUser.userId ? null : [{ ...message, remoteUserId: pid }]
       );
       return;
@@ -138,7 +138,7 @@ io.on("connection", (socket) => {
 
     // 연결되어있다면 데이터 공유를 합니다.
     if (sender.isConnectedWith(message.remoteUserId)) {
-      sender.getConnectedWith(message.remoteUserId)?.emit("file-sharing-demo", {
+      sender.getConnectedWith(message.remoteUserId)?.emit("data-sharing", {
         ...message,
         extra: currentUser.extra,
       });
