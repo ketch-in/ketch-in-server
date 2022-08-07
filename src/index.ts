@@ -1,73 +1,217 @@
-import * as http from 'http';
-import * as path from 'path';
-import * as express from 'express';
-import { Server } from 'socket.io';
+import * as http from "http";
+import * as path from "path";
+import * as express from "express";
+import { Server } from "socket.io";
 
-type HostCache = { [key: string]: string };
-type OrganizerInfo = {
-  id?: string | null;
-  active?: boolean;
-}
-interface UserState {
-  target: "self" | "other";
-  toggle: boolean;
-  organizer: OrganizerInfo
-}
-type EventType = 'up' | 'down' | 'move'
-type DrawPacket = [number, number, number, number, EventType]
+import Room from "./room";
+import User from "./user";
+
+import { wrapperCallback } from "./utils";
+
+import { CONST_STRINGS } from "./CONST_STRINGS";
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-const cache: HostCache = {};
 
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+app.get("/", (_req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
-io.on('connection', (socket) => {
-  // join 할 때 organizer-info:screen 정보 송출
-  socket.on('join', (meetId: string, role?: string) => {
-    socket.join(meetId);
-    if (role === 'organizer') {
-      cache[meetId] = socket.id;
-      socket.to(meetId).emit('organizer-info:screen', socket.id);
-    } else {
-      socket.to(meetId).emit('organizer-info:refetch', socket.id);
-      if (cache[meetId]) {
-        socket.emit('organizer-info:screen', cache[meetId])
+app.get("/socket.io.js", (_req, res) => {
+  res.sendFile(
+    path.join(__dirname, "../node_modules/socket.io/client-dist/socket.io.js")
+  );
+});
+
+app.get("/RTCMultiConnection.js", (_req, res) => {
+  res.sendFile(path.join(__dirname, "../public/RTCMultiConnection.js"));
+});
+
+app.get("/socket.io.js.map", (_req, res) => {
+  res.sendFile(
+    path.join(
+      __dirname,
+      "../node_modules/socket.io/client-dist/socket.io.js.map"
+    )
+  );
+});
+
+app.get("/adapter.js", (_req, res) => {
+  res.sendFile(
+    path.join(__dirname, "../node_modules/webrtc-adapter/out/adapter.js")
+  );
+});
+
+app.get("/FileBufferReader.js", (_req, res) => {
+  res.sendFile(path.join(__dirname, "../node_modules/fbr/FileBufferReader.js"));
+});
+
+const io = new Server(server, { cors: { origin: "*" } });
+
+io.on("connection", (socket) => {
+  const currentUser = new User(socket);
+
+  // 내가 속한 룸의 데이터를 업데이트합니다.
+  socket.on("extra-data-updated", function (extra) {
+    try {
+      currentUser.setExtra(extra, true);
+
+      const roomId = currentUser.admininfo.sessionid;
+      const room = Room.get(roomId) as Room | null;
+
+      if (!room) {
+        return;
       }
+
+      if (room.isOwner(currentUser)) {
+        // room's extra must match owner's extra
+        room.extra = extra;
+      }
+      room.emitAll("extra-data-updated", () => [currentUser.userId, extra]);
+    } catch (e) {
+      console.log("extra-data-updated", e);
     }
   });
 
-  /**
-   * organizerInfo:{
-   *  id: data-initial-participant-id // 발표자 ID
-   *  active: true // 그리기 가능 여부
-   * }
-   */
-  socket.on('organizer-info:update', (id: string, userState: UserState) => {
-    socket.to(id).emit('organizer-info:update', userState, socket.id);
+  // 방을 새로 생성할지, 아니면 기존 방에 접속하는 형태인지 지정
+  socket.on("check-presence", function (roomId, _callback) {
+    const callback = wrapperCallback("open-room", _callback);
+
+    const room = Room.get(roomId) as Room;
+    const active = Room.isActive(roomId);
+
+    callback(active, roomId, active ? room.extra : Room.extra);
   });
 
-  socket.on('draw:add', (id: string, packet: DrawPacket) => {
-    // console.log(`draw:add > ${point}`)
-    // TODO: 그림을 그리는 주최는 host의 app이므로 app한태만 쏴주면 됨
-    socket.to(id).emit('draw:add', packet, socket.id);
-  });
+  // 데이터 공유여부를 확인하고 정보를 공유합니다. (커스텀 소켓)
+  socket.on("data-sharing", function (message) {
+    if (!message.remoteUserId || message.remoteUserId === currentUser.userId) {
+      return;
+    }
 
-  // screen host가 접속을 끊으면 캐시를 비운다.
-  socket.on('disconnect', () => {
-    const meets = Object.keys(cache);
-    meets.forEach((meetId) => {
-      if (cache[meetId] === socket.id) {
-        delete cache[meetId];
-        socket.to(meetId).emit('organizer-info:screen', null);
+    // 새로운 참가자 요청일 경우 (보통 open-room or join-room 임)
+    if (message.message.newParticipationRequest) {
+      const room = Room.get(currentUser.admininfo.sessionid) as Room | null;
+
+      // 아직 내가 속한 방이 없다면 대기합니다.
+      if (!room) {
+        return;
       }
+
+      // 만약 내가 속한 방이 만약 꽉찬 상태라면, 반환합니다.
+      if (room.isFull && !room.isJoinUser(currentUser.userId)) {
+        return;
+      }
+
+      // redundant?
+      Room.join(room.roomId, currentUser.userId);
+
+      // connect with all participants
+      room.emitAll("data-sharing", (pid) =>
+        pid === currentUser.userId ? null : [{ ...message, remoteUserId: pid }]
+      );
+      return;
+    }
+
+    // sender 사용자가 존재하는 지 확인합니다.
+    const sender = User.get(message.sender) as User | null;
+    if (!sender) {
+      currentUser.emit("user-not-found", message.sender);
+      return;
+    }
+
+    // remoteUser 사용자가 존재하는 지 확인합니다.
+    const remoteUser = User.get(message.remoteUserId) as User | null;
+
+    // sender와 remoteUser 사용자간에 connectedWith로 이어줍니다.
+    if (
+      remoteUser &&
+      !message.message.userLeft &&
+      !sender.isConnectedWith(message.remoteUserId)
+    ) {
+      sender.connectedWith(message.remoteUserId, remoteUser.socket);
+      sender.emit("user-connected", message.remoteUserId);
+
+      remoteUser.connectedWith(message.sender, socket);
+      remoteUser.emit("user-connected", message.sender);
+    }
+
+    // 연결되어있다면 데이터 공유를 합니다.
+    if (sender.isConnectedWith(message.remoteUserId)) {
+      sender.getConnectedWith(message.remoteUserId)?.emit("data-sharing", {
+        ...message,
+        extra: currentUser.extra,
+      });
+    }
+  });
+
+  // 방을 새로 생성합니다.
+  socket.on("open-room", function (arg, _callback = console.log) {
+    const callback = wrapperCallback("open-room", _callback);
+
+    const room = Room.get(arg.sessionid) as Room | null;
+
+    // 룸이 이미 존재하다면 종료합니다.
+    if (room && !room.isEmpty) {
+      return callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
+    }
+
+    // 내 extra 데이터를 업데이트합니다.
+    currentUser.setExtra(arg.extra);
+
+    // 새로운 룸을 생성합니다.
+    new Room({
+      id: arg.sessionid,
+      owner: currentUser.userId,
+      ...arg,
+      maxParticipantsAllowed: currentUser.maxParticipantsAllowed,
     });
+
+    // 나한테 RTC 정보를 저장합니다.
+    currentUser.admininfo = arg;
+
+    callback(true);
+  });
+
+  // 룸에 들어갑니다.
+  socket.on("join-room", function (arg, _callback = console.log) {
+    const callback = wrapperCallback("join-room", _callback);
+
+    // 내 extra 데이터를 업데이트합니다.
+    currentUser.setExtra(arg.extra);
+
+    const room = Room.get(arg.sessionid) as Room | null;
+
+    // 룸이 존재하지 않을 경우 접속하지 않습니다.
+    if (!room) {
+      return callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
+    }
+
+    // 룸 한동에 도달했으면 더 이상 진행하지 않습니다.
+    if (room.isFull) {
+      return callback(false, CONST_STRINGS.ROOM_FULL);
+    }
+
+    // 나한테 RTC 정보를 저장합니다.
+    currentUser.admininfo = arg;
+
+    // 룸에 가입합니다.
+    Room.join(arg.sessionid, currentUser.userId);
+
+    callback(true);
+  });
+
+  // 룸에 나갑니다.
+  socket.on("disconnect", function () {
+    // 나와 연결된 사용자에게 룸을 나간다는 소식을 전합니다.
+    currentUser?.emitAll("user-disconnected", (pid) => {
+      (User.get(pid) as User)?.disconnectedWith(currentUser.userId);
+      return [currentUser.userId];
+    });
+
+    // 내 정보를 제거합니다.
+    User.remove(currentUser);
   });
 });
 
-server.listen(8000, () => {
-  console.log('listening on *:8000');
-});
+server.listen(9002);
