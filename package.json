@@ -30,7 +30,6 @@
     "@types/express": "^4.17.13",
     "@typescript-eslint/eslint-plugin": "^4.17.0",
     "@typescript-eslint/parser": "^4.17.0",
-    "electron": "15.3.1",
     "eslint": "^7.6.0",
     "eslint-plugin-import": "^2.20.0",
     "fbr": "^2.0.8",

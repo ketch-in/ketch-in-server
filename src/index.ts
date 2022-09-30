@@ -9,41 +9,16 @@ import User from "./user";
 import { wrapperCallback } from "./utils";
 
 import { CONST_STRINGS } from "./CONST_STRINGS";
+import DEMO_PATH from "./demoList";
 
 const app = express();
 const server = http.createServer(app);
 
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-app.get("/socket.io.js", (_req, res) => {
-  res.sendFile(
-    path.join(__dirname, "../node_modules/socket.io/client-dist/socket.io.js")
-  );
-});
-
-app.get("/RTCMultiConnection.js", (_req, res) => {
-  res.sendFile(path.join(__dirname, "../public/RTCMultiConnection.js"));
-});
-
-app.get("/socket.io.js.map", (_req, res) => {
-  res.sendFile(
-    path.join(
-      __dirname,
-      "../node_modules/socket.io/client-dist/socket.io.js.map"
-    )
-  );
-});
-
-app.get("/adapter.js", (_req, res) => {
-  res.sendFile(
-    path.join(__dirname, "../node_modules/webrtc-adapter/out/adapter.js")
-  );
-});
-
-app.get("/FileBufferReader.js", (_req, res) => {
-  res.sendFile(path.join(__dirname, "../node_modules/fbr/FileBufferReader.js"));
+const demoFileList = Object.keys(DEMO_PATH) as (keyof typeof DEMO_PATH)[];
+demoFileList.forEach((urlPath) => {
+  app.get(urlPath, (_req, res) => {
+    res.sendFile(path.join(__dirname, DEMO_PATH[urlPath]));
+  });
 });
 
 const io = new Server(server, { cors: { origin: "*" } });
@@ -214,4 +189,4 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(9002);
+server.listen(process.env.PORT || 9002);
