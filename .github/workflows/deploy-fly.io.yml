@@ -1,0 +1,22 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Fly.io
+      run: curl -L https://fly.io/install.sh | sh
+    
+    - name: Deploy Fly.io
+      run: flyctl deploy -t ${{ secrets.ACCESS_TOKEN_FLY }}
