@@ -17,9 +17,6 @@ jobs:
     
     - name: Install Fly.io
       run: curl -L https://fly.io/install.sh | sh
-      
-    - name: Config Fly.io
-      run : export FLYCTL_INSTALL="/home/runner/.fly" | export PATH="$FLYCTL_INSTALL/bin:$PATH"
     
     - name: Deploy Fly.io
-      run: flyctl deploy -t ${{ secrets.ACCESS_TOKEN_FLY }}
+      run: FLYCTL_INSTALL="/home/runner/.fly" PATH="$FLYCTL_INSTALL/bin:$PATH" flyctl deploy -t ${{ secrets.ACCESS_TOKEN_FLY }}
