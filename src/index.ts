@@ -1,5 +1,4 @@
 import * as http from "http";
-import * as path from "path";
 import * as express from "express";
 import { Server } from "socket.io";
 
@@ -8,21 +7,12 @@ import User from "./user";
 
 import { wrapperCallback } from "./utils";
 
-import { CONST_STRINGS } from "./CONST_STRINGS";
-import DEMO_PATH from "./demoList";
+import { ERROR_MESSAGES } from "./constants";
 
 const app = express();
+
 const server = http.createServer(app);
-
-const demoFileList = Object.keys(DEMO_PATH) as (keyof typeof DEMO_PATH)[];
-demoFileList.forEach((urlPath) => {
-  app.get(urlPath, (_req, res) => {
-    res.sendFile(path.join(__dirname, DEMO_PATH[urlPath]));
-  });
-});
-
 const io = new Server(server, { cors: { origin: "*" } });
-
 io.on("connection", (socket) => {
   const currentUser = new User(socket);
 
@@ -128,7 +118,7 @@ io.on("connection", (socket) => {
 
     // 룸이 이미 존재하다면 종료합니다.
     if (room && !room.isEmpty) {
-      return callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
+      return callback(false, ERROR_MESSAGES.ROOM_NOT_AVAILABLE);
     }
 
     // 내 extra 데이터를 업데이트합니다.
@@ -159,12 +149,12 @@ io.on("connection", (socket) => {
 
     // 룸이 존재하지 않을 경우 접속하지 않습니다.
     if (!room) {
-      return callback(false, CONST_STRINGS.ROOM_NOT_AVAILABLE);
+      return callback(false, ERROR_MESSAGES.ROOM_NOT_AVAILABLE);
     }
 
     // 룸 한동에 도달했으면 더 이상 진행하지 않습니다.
     if (room.isFull) {
-      return callback(false, CONST_STRINGS.ROOM_FULL);
+      return callback(false, ERROR_MESSAGES.ROOM_FULL);
     }
 
     // 나한테 RTC 정보를 저장합니다.
@@ -187,6 +177,10 @@ io.on("connection", (socket) => {
     // 내 정보를 제거합니다.
     User.remove(currentUser);
   });
+});
+
+app.use((_, res) => {
+  res.redirect("https://ketch-in.github.io/");
 });
 
 server.listen(process.env.PORT || 9002);

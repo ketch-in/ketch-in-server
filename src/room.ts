@@ -1,14 +1,7 @@
 import Item from "./item";
-import { Dictionary } from "./types";
+import { Dictionary, RoomArgs } from "./types";
 import User from "./user";
 import { parseExtra } from "./utils";
-
-interface RoomArgs {
-  id: string;
-  owner: string;
-  extra: Dictionary;
-  maxParticipantsAllowed: number;
-}
 
 export default class Room extends Item {
   static join(roomId: string, userId: string): boolean {

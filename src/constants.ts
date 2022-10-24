@@ -1,8 +1,4 @@
-// Muaz Khan      - www.MuazKhan.com
-// MIT License    - www.WebRTC-Experiment.com/licence
-// Documentation  - github.com/muaz-khan/RTCMultiConnection
-
-export const CONST_STRINGS = {
+export const ERROR_MESSAGES = {
   ROOM_NOT_AVAILABLE: "Room not available",
   INVALID_PASSWORD: "Invalid password",
   USERID_NOT_AVAILABLE: "User ID does not exist",

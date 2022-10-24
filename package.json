@@ -15,7 +15,6 @@
   "scripts": {
     "start": "npm run build && node ./dist",
     "build": "tsc --project ./tsconfig.json",
-    "postbuild": "cp ./public/index.html ./dist/index.html",
     "docker:build": "docker build -t ketch-in-server .",
     "docker:stop": "docker stop ketch-in-server || true && docker rm ketch-in-server || true",
     "docker:start": "npm run docker:build && docker run --name=ketch-in-server -p 80:8000 ketch-in-server:latest",
